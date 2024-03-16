@@ -1,0 +1,13 @@
+streamlit
+pandas
+scikit-learn
+wget
+plotly
+matplotlib
+seaborn
+dtreeviz
+zipfile36
+hyperopt
+xgboost
+catboost
+numpy

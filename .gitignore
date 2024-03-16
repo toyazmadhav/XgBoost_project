@@ -1,0 +1,9 @@
+env/
+.vscode/
+Ravdess_Tess.zip
+Ravdess_Tess/
+Kaggle_Testset/Kaggle_Testset/
+training_data/old/
+plots/
+submissions/
+__pycache__/
