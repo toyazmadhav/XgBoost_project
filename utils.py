@@ -23,5 +23,5 @@ def convert_float_params(names, params):
     for float_type in names:
         raw_val = params[float_type]
         if is_number(raw_val):
-            params[float_type] = '{:.3f}'.format(raw_val)
+            params[float_type] = float('{:.3f}'.format(raw_val))
     return params

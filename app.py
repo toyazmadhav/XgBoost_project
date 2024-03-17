@@ -18,6 +18,9 @@ from sklearn.metrics import accuracy_score, classification_report
 from sklearn.model_selection import train_test_split
 from sklearn import metrics
 from sklearn.model_selection import cross_val_score
+from sklearn.metrics import roc_curve
+
+from sklearn.ensemble import VotingClassifier
 
 
 from hyperopt import hp,fmin,tpe,STATUS_OK,Trials
@@ -155,17 +158,54 @@ def write_train_and_test_reports(X_train, X_test, y_train, y_test, rf_clf):
     st.write( accuracy_score(y_train, y_pred_train))
     st.dataframe(pd.DataFrame(classification_report(y_train, y_pred_train, output_dict=True)))
 
-def kaggle_predictions(train_model_path, out_res_name):
+    fpr, tpr, thresh = roc_curve(y_test, y_pred, pos_label=1)
+    random_probs = [1 for i in range(len(y_test))]
+    p_fpr, p_tpr, _ = roc_curve(y_test, random_probs, pos_label=1)
+    # plt.style.use('seaborn')
+
+    # plot roc curves
+    fig, axis = plt.subplots(1, 1, figsize = (20, 20))
+    axis.plot(fpr, tpr, linestyle='--',color='orange', label='Xg boost')
+    axis.plot(p_fpr, p_tpr, linestyle='--', color='blue')
+    # title
+    plt.title('ROC curve')
+    # x label
+    plt.xlabel('False Positive Rate')
+    # y label
+    plt.ylabel('True Positive Rate')
+    plt.legend(loc='best')
+    st.pyplot(fig)
+
+def kaggle_predictions(train_model_path, out_res_name, is_cat_encode=True):
     clf = pickle.load(open(train_model_path, 'rb'))
     df_kgle = pd.read_csv('hr_employee_attrition_test.csv')
     df_kgle = df_kgle.drop(columns=cols_to_be_dropeed)
     df_kgle['overtime'].replace({'Yes': 1, 'No': 0}, inplace=True)
-    df_kgle_cat_one_hot = pd.get_dummies(df_kgle, columns=cat_cols, dtype='uint8')
-    kaggle_pred_arr = clf.predict(df_kgle_cat_one_hot.drop(columns=['id']))
+    if is_cat_encode:
+      df_kgle = pd.get_dummies(df_kgle, columns=cat_cols, dtype='uint8')
+    else:
+      df_kgle[cat_cols] = df_kgle[cat_cols].astype('category')
+    kaggle_pred_arr = clf.predict(df_kgle.drop(columns=['id']))
     kaggle_pred_df = pd.DataFrame(kaggle_pred_arr, columns=['label'])
     kaggle_pred_df['id'] = list(np.arange(1, len(kaggle_pred_arr) + 1))
     kaggle_pred_df = kaggle_pred_df[['id', 'label']]
     kaggle_pred_df.to_csv(f'submissions/{out_res_name}', index=False)
+
+def load_and_pre_process_and_split_data(is_encode_cat=True):
+    df = load_data()
+    df['overtime'].replace({'Yes': 1, 'No': 0}, inplace=True)
+    df['attrition'] = df['attrition'].replace({'Yes': 1, 'No': 0})
+    for col in numeric_cols:
+        handle_outliers(df, col)
+    df_final = df.drop(columns=cols_to_be_dropeed)
+    if is_encode_cat:
+      df_final = pd.get_dummies(df_final, columns=cat_cols, dtype='uint8')
+    else:
+      df_final[cat_cols] = df_final[cat_cols].astype('category')
+    X = df_final.drop('attrition', axis=1)
+    y = df_final.attrition
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+    return X_train,X_test,y_train,y_test
 
 def main():
   df = load_data()
@@ -253,9 +293,11 @@ def main():
 def hyper_opt_best_model(X_train, y_train):
     space = { 'learning_rate': hp.loguniform('learning_rate', np.log(0.01), np.log(1)),
         'colsample_bytree': hp.uniform('colsample_bytree', 0.6, 1.0),
-        'reg_lambda': hp.uniform('reg_lambda', 0.0, 1.0),
+        'reg_lambda': hp.uniform('reg_lambda', 0.1, 0.5),
         'max_depth': hp.quniform('max_depth', 10, 50, 10),
-        'n_estimators' : hp.choice('n_estimators', [10, 50, 100, 150, 200, 250, 300, 350, 400])
+        'n_estimators' : hp.choice('n_estimators', [10, 50, 100, 150, 200, 250, 300, 350, 400]),
+        'scale_pos_weight': hp.uniform('scale_pos_weight', 4, 15),
+        'min_child_weight': hp.uniform('min_child_weight', 1, 3),
       }
     def objective(params):
       int_types = [ "max_depth", "n_estimators"]
@@ -279,35 +321,89 @@ def hyper_opt_best_model(X_train, y_train):
     return best
 
 def hyper_opt_best_xgboost():
-  df = load_data()
-  df['overtime'].replace({'Yes': 1, 'No': 0}, inplace=True)
-  df['attrition'] = df['attrition'].replace({'Yes': 1, 'No': 0})
-  for col in numeric_cols:
-      handle_outliers(df, col)
-  df_final = df.drop(columns=cols_to_be_dropeed)
-  df_cat_one_hot = pd.get_dummies(df_final, columns=cat_cols, dtype='uint8')
-  X = df_cat_one_hot.drop('attrition', axis=1)
-  y = df_cat_one_hot.attrition
-  X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+  X_train, X_test, y_train, y_test = load_and_pre_process_and_split_data()
   best_param = hyper_opt_best_model(X_train, y_train)
   int_types = [ "max_depth", "n_estimators"]
   best_param = convert_int_params(int_types, best_param)
   xgb_clf = XGBClassifier(**best_param)
- 
+  float_types = ["colsample_bytree", "reg_lambda", "learning_rate"]
+  best_param = convert_float_params(float_types, best_param)
   xgb_clf.fit(X_train, y_train)
   write_train_and_test_reports(X_train, X_test, y_train, y_test, xgb_clf)
-  pickle.dump(xgb_clf, open('models/xgboost_balanced_outliers_removed_tuned_hyperopt.sav', 'wb'))
-  kaggle_predictions('models/xgboost_balanced_outliers_removed_tuned_hyperopt.sav', 'xgboost_balanced_outliers_removed_tuned_hyperopt.csv')
-  
+  name = 'xgboost_hyper_opt_' + "'" + best_param.__str__().replace(':', '_') + "'"
+  pickle.dump(xgb_clf, open(f'models/{name}.sav', 'wb'))
+  kaggle_predictions(f'models/{name}.sav', f'{name}.csv')
+def xgboost_manual_tuning():
+  st.write("# XgBoost Classifier")
+  X_train, X_test, y_train, y_test = load_and_pre_process_and_split_data()
+  params = {
+'colsample_bytree': 0.75,
+'reg_lambda': 0.5,
+'learning_rate': 0.0213,
+'n_estimators': 100,
+'max_depth': 8,
+'random_state': 42,
+'scale_pos_weight': 4.5,
+ 'min_child_weight': 3,
+}
+  xgb_clf = XGBClassifier(**params)
+  xgb_clf.fit(X_train, y_train)
+  write_train_and_test_reports(X_train, X_test, y_train, y_test, xgb_clf)
+  st.write(xgb_clf.get_params())
+  name = 'xgboost_' + "'" + params.__str__().replace(':', '_') + "'"
+  pickle.dump(xgb_clf, open(f'models/{name}.sav', 'wb'))
+  kaggle_predictions(f'models/{name}.sav', f'{name}.csv')
+
+def voting_classifier():
+  X_train, X_test, y_train, y_test = load_and_pre_process_and_split_data(is_encode_cat=False)
+  params = {
+  # 'colsample_bytree': 0.75,
+  # 'reg_lambda': 0.179,
+  # 'learning_rate': 0.0213,
+  'n_estimators': 100,
+  # 'max_depth': 8,
+  'random_state': 42,
+  'scale_pos_weight': 4.5,
+  # 'enable_categorical':True,
+  # 'max_cat_to_onehot': 10
+  }
+
+
+
+  xgb_clf = XGBClassifier(**params,  enable_categorical=True)
+  cat_clf = CatBoostClassifier(learning_rate=0.1, n_estimators=100, random_state=42, class_weights={0: 1, 1:6}, cat_features=cat_cols)
+  classifiers = [('lr', xgb_clf), ('svc', cat_clf)]
+  voting_clf = VotingClassifier(estimators = classifiers, voting = 'soft')
+  st.write("# Xgboost classifier")
+  xgb_clf.fit(X_train, y_train)
+  write_train_and_test_reports(X_train, X_test, y_train, y_test, xgb_clf)
+
+  st.write("# Catboost classifier")
+  cat_clf.fit(X_train, y_train)
+  write_train_and_test_reports(X_train, X_test, y_train, y_test, cat_clf)
+
+  st.write("# Voting classifier(Xgboost and catboost)")
+  voting_clf.fit(X_train, y_train)
+  write_train_and_test_reports(X_train, X_test, y_train, y_test, voting_clf)
+
+  name = 'voting_clf_plain_xgboost_plain_est_100_catboost_est_100'
+  pickle.dump(xgb_clf, open(f'models/{name}.sav', 'wb'))
+  kaggle_predictions(f'models/{name}.sav', f'{name}.csv', False)
+
+
 
 # plotting and plain xgboost and catboost
-main()
+# main()
   
+# xgboost_manual_tuning()
+
 #hyperopt xgboost
 # hyper_opt_best_xgboost()
 
 #predicting using any saved model
 # kaggle_predictions('models/xgboost_balanced_outliers_removed_tuned_hyperopt.sav', 'xgboost_balanced_outliers_removed_tuned_hyperopt.csv')
+
+voting_classifier()
 
 
 
